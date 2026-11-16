@@ -4,16 +4,16 @@ import os
 import threading
 from flask import Flask
 
-# 1. إعداد Flask (الخادم الوهمي لـ Render)
+# 1. إعداد الخادم الوهمي
 app = Flask(__name__)
 
 @app.route('/')
 def home():
     return "البوت يعمل بنجاح!"
 
-# 2. جلب المفاتيح من بيئة الاستضافة
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+# 2. جلب المفاتيح مع تنظيفها من المسافات المخفية (strip)
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 
 # 3. إعداد Gemini
 genai.configure(api_key=GEMINI_API_KEY)
@@ -24,27 +24,30 @@ bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    bot.reply_to(message, "مرحباً! أنا بوت ذكاء اصطناعي مدعوم بـ Gemini.")
+    bot.reply_to(message, "مرحباً! أنا جاهز للعمل.")
 
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
     try:
+        # إظهار حالة "يكتب..." للمستخدم
+        bot.send_chat_action(message.chat.id, 'typing')
+        
         response = model.generate_content(message.text)
         bot.reply_to(message, response.text)
     except Exception as e:
-        bot.reply_to(message, "عذراً، حدث خطأ.")
+        # إرسال الخطأ الحقيقي للمستخدم بدلاً من رسالة عامة
+        error_message = f"فشل الاتصال بـ Gemini ⚠️\n\nالسبب الدقيق:\n{str(e)}"
+        bot.reply_to(message, error_message)
 
-# 5. دالة لتشغيل البوت في خيط (Thread) منفصل
+# 5. تشغيل البوت وتجاهل الرسائل القديمة العالقة
 def run_bot():
-    print("البوت يعمل الآن...")
-    bot.infinity_polling()
+    print("جاري تشغيل البوت...")
+    bot.infinity_polling(skip_pending=True)
 
-# 6. تشغيل الخادم والبوت معاً
+# 6. التشغيل المزدوج (الخادم والبوت)
 if __name__ == "__main__":
-    # تشغيل البوت في الخلفية
     bot_thread = threading.Thread(target=run_bot)
     bot_thread.start()
     
-    # تشغيل خادم Flask (المنفذ يحدده Render تلقائياً)
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
