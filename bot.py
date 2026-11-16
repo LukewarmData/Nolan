@@ -32,7 +32,7 @@ def handle_message(message):
         
         # استخدام أقوى نموذج حالي (Gemini 2.5 Flash)
         response = client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='model=gemini-3.8-flash',
             contents=message.text
         )
         bot.reply_to(message, response.text)
