@@ -11,7 +11,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "البوت يعمل بشخصيته الجديدة بنجاح 24/7!"
+    return "البوت يعمل بشخصيته الجديدة وذاكرة المحادثات بنجاح 24/7!"
 
 # 2. جلب المفاتيح من بيئة الاستضافة
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
@@ -22,35 +22,51 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
 # --------------------------------------------------------
-# شخصية البوت (عدل هذا النص كما تحب)
+# شخصية البوت
 # --------------------------------------------------------
-# --------------------------------------------------------
-    # هنا تقوم بتعريف شخصية البوت (عدل هذا النص كما تحب)
-    # --------------------------------------------------------
 MY_SYSTEM_PROMPT = """
-    أنت بوت ذكاء اصطناعي واسمك "نولان". 
-    تمت برمجتك بواسطة المبرمج ( حسين عدنان عبد الأمام ).
-    إذا سألك من صنعك، أخبره باسم مبرمجك . 
-    وأجب باللهجة دائما العراقية, واستخدم الايموجيات في الردود عند الحاجة, ولا تجب بالتفصيل الا عندما يطلب منك ذالك
-    """
-    
+أنت بوت ذكاء اصطناعي واسمك "نولان". 
+تمت برمجتك بواسطة المبرمج ( حسين عدنان عبد الأمام ).
+إذا سألك من صنعك، أخبره باسم مبرمجك . 
+وأجب باللهجة العراقية, واستخدم الايموجيات في الردود عند الحاجة, ولا تجب بالتفصيل الا عندما يطلب منك ذالك
+"""
+
+# قاموس لحفظ جلسة المحادثة لكل مستخدم حسب الـ ID الخاص به
+user_chats = {}
+
+def get_user_chat(user_id):
+    """جلب محادثة المستخدم الحالية أو إنشاء محادثة جديدة له"""
+    if user_id not in user_chats:
+        user_chats[user_id] = client.chats.create(
+            model='gemini-3.5-flash-lite',
+            config=types.GenerateContentConfig(
+                system_instruction=MY_SYSTEM_PROMPT
+            )
+        )
+    return user_chats[user_id]
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    bot.reply_to(message, "مرحباً! أنا نولان، جاهز لمساعدتك.")
+    bot.reply_to(message, "مرحباً! أنا نولان، جاهز لمساعدتك. 👋\n(أرسل /reset إذا أردت مسح الذاكرة والبدء بمحادثة جديدة)")
+
+@bot.message_handler(commands=['reset'])
+def reset_chat(message):
+    user_id = message.from_user.id
+    if user_id in user_chats:
+        del user_chats[user_id]
+    bot.reply_to(message, "تم مسح ذاكرة محادثتنا بنجاح! نبدأ من جديد 🔄")
 
 @bot.message_handler(content_types=['text'])
 def handle_message(message):
     try:
         bot.send_chat_action(message.chat.id, 'typing')
         
-        response = client.models.generate_content(
-            model='gemini-3.5-flash-lite',
-            contents=message.text,
-            config=types.GenerateContentConfig(
-                system_instruction=MY_SYSTEM_PROMPT
-            )
-        )
+        # جلب الـ ID الخاص بالشخص الذي أرسل الرسالة
+        user_id = message.from_user.id
+        chat = get_user_chat(user_id)
+        
+        # إرسال الرسالة ضمن نفس الجلسة ليحفظ السياق
+        response = chat.send_message(message.text)
         
         if response and response.text:
             reply_text = response.text
