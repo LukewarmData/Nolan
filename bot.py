@@ -92,6 +92,38 @@ def reset_chat(message):
     bot.reply_to(message, "تم مسح ذاكرة محادثتنا بنجاح! نبدأ من جديد 🔄")
 
 # --------------------------------------------------------
+# أمر المناداة /nolan (يعمل في المجموعات بدون صلاحية قراءة الرسائل)
+# --------------------------------------------------------
+@bot.message_handler(commands=['nolan'])
+def handle_nolan_command(message):
+    try:
+        bot.send_chat_action(message.chat.id, 'typing')
+        
+        user_id = message.from_user.id
+        chat = get_user_chat(user_id)
+        
+        # التحقق هل كتب المستخدم نصاً بعد /nolan أم ناداه فقط
+        parts = message.text.split(maxsplit=1)
+        if len(parts) > 1 and parts[1].strip():
+            prompt = parts[1].strip()
+        else:
+            prompt = "شخص ما ناداك باسمك فقط الآن، رد عليه برد عشوائي قصير وعفوي حسب شخصيتك واسأله شلون تكدر تساعده."
+        
+        response = chat.send_message(prompt)
+        
+        if response and response.text:
+            send_long_reply(message, response.text)
+        else:
+            bot.reply_to(message, "ها عيني، موجود! شلون أگدر أساعدك؟ 👋")
+            
+    except Exception as e:
+        try:
+            error_message = f"تعذر الرد حالياً ⚠️\n\nالسبب:\n{str(e)[:1000]}"
+            bot.reply_to(message, error_message)
+        except Exception as send_err:
+            print(f"فشل إرسال رسالة الخطأ: {send_err}")
+
+# --------------------------------------------------------
 # 1. معالجة الرسائل النصية
 # --------------------------------------------------------
 @bot.message_handler(content_types=['text'])
