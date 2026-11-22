@@ -11,7 +11,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "البوت يعمل بشخصيته الجديدة وذاكرة المحادثات بنجاح 24/7!"
+    return "البوت يعمل بشخصيته الجديدة وذاكرة المحادثات والصور والملفات بنجاح 24/7!"
 
 # 2. جلب المفاتيح من بيئة الاستضافة
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
@@ -45,9 +45,19 @@ def get_user_chat(user_id):
         )
     return user_chats[user_id]
 
+def send_long_reply(message, reply_text):
+    """تقسيم الرسالة تلقائياً إذا تجاوزت حد تليجرام (4096 حرف)"""
+    for i in range(0, len(reply_text), 4000):
+        bot.reply_to(message, reply_text[i:i+4000])
+
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    bot.reply_to(message, "مرحباً! أنا نولان، جاهز لمساعدتك. 👋\n(أرسل /reset إذا أردت مسح الذاكرة والبدء بمحادثة جديدة)")
+    bot.reply_to(
+        message,
+        "مرحباً! أنا نولان، جاهز لمساعدتك. 👋\n"
+        "يمكنك إرسال نصوص، صور، أو ملفات (مثل PDF وملفات نصية) للنقاش حولها.\n"
+        "(أرسل /reset إذا أردت مسح الذاكرة والبدء بمحادثة جديدة)"
+    )
 
 @bot.message_handler(commands=['reset'])
 def reset_chat(message):
@@ -56,29 +66,110 @@ def reset_chat(message):
         del user_chats[user_id]
     bot.reply_to(message, "تم مسح ذاكرة محادثتنا بنجاح! نبدأ من جديد 🔄")
 
+# --------------------------------------------------------
+# 1. معالجة الرسائل النصية
+# --------------------------------------------------------
 @bot.message_handler(content_types=['text'])
 def handle_message(message):
     try:
         bot.send_chat_action(message.chat.id, 'typing')
         
-        # جلب الـ ID الخاص بالشخص الذي أرسل الرسالة
         user_id = message.from_user.id
         chat = get_user_chat(user_id)
         
-        # إرسال الرسالة ضمن نفس الجلسة ليحفظ السياق
         response = chat.send_message(message.text)
         
         if response and response.text:
-            reply_text = response.text
-            # تقسيم الرسالة تلقائياً إذا تجاوزت حد تليجرام (4096 حرف)
-            for i in range(0, len(reply_text), 4000):
-                bot.reply_to(message, reply_text[i:i+4000])
+            send_long_reply(message, response.text)
         else:
             bot.reply_to(message, "لم أتمكن من توليد رد لهذه الرسالة، جرب صياغتها بطريقة أخرى.")
             
     except Exception as e:
         try:
             error_message = f"تعذر الرد حالياً ⚠️\n\nالسبب:\n{str(e)[:1000]}"
+            bot.reply_to(message, error_message)
+        except Exception as send_err:
+            print(f"فشل إرسال رسالة الخطأ: {send_err}")
+
+# --------------------------------------------------------
+# 2. معالجة الصور
+# --------------------------------------------------------
+@bot.message_handler(content_types=['photo'])
+def handle_photo(message):
+    try:
+        bot.send_chat_action(message.chat.id, 'typing')
+        
+        user_id = message.from_user.id
+        chat = get_user_chat(user_id)
+        
+        # أخذ أعلى دقة متاحة للصورة وتحميلها
+        file_info = bot.get_file(message.photo[-1].file_id)
+        downloaded_file = bot.download_file(file_info.file_path)
+        
+        # استخدام النص المرفق مع الصورة (Caption) أو سؤال افتراضي
+        prompt = message.caption if message.caption else "شنو موجود بهذه الصورة؟ اشرحلي باختصار."
+        
+        image_part = types.Part.from_bytes(
+            data=downloaded_file,
+            mime_type="image/jpeg"
+        )
+        
+        response = chat.send_message([image_part, prompt])
+        
+        if response and response.text:
+            send_long_reply(message, response.text)
+        else:
+            bot.reply_to(message, "ما گدرت أقرأ الصورة بشكل واضح، جرب ترسلها مرة ثانية.")
+            
+    except Exception as e:
+        try:
+            error_message = f"تعذر معالجة الصورة حالياً ⚠️\n\nالسبب:\n{str(e)[:1000]}"
+            bot.reply_to(message, error_message)
+        except Exception as send_err:
+            print(f"فشل إرسال رسالة الخطأ: {send_err}")
+
+# --------------------------------------------------------
+# 3. معالجة الملفات (PDF, TXT, CSV, أكواد برمجية، إلخ)
+# --------------------------------------------------------
+@bot.message_handler(content_types=['document'])
+def handle_document(message):
+    try:
+        doc = message.document
+        
+        # التحقق من حجم الملف (حد التحميل في تليجرام للبوتات هو 20 ميجابايت)
+        if doc.file_size and doc.file_size > 20 * 1024 * 1024:
+            bot.reply_to(message, "حجم الملف أكبر من 20 ميجابايت، تليجرام ما يسمح للبوت بتحميل ملفات بهذا الحجم ⚠️")
+            return
+
+        bot.send_chat_action(message.chat.id, 'typing')
+        
+        user_id = message.from_user.id
+        chat = get_user_chat(user_id)
+        
+        file_info = bot.get_file(doc.file_id)
+        downloaded_file = bot.download_file(file_info.file_path)
+        
+        # تحديد نوع الملف (MIME Type)
+        mime_type = doc.mime_type or "text/plain"
+        file_name = doc.file_name or "ملف"
+        
+        prompt = message.caption if message.caption else f"اقرأ هذا الملف ({file_name}) ولخصلي محتواه باختصار."
+        
+        file_part = types.Part.from_bytes(
+            data=downloaded_file,
+            mime_type=mime_type
+        )
+        
+        response = chat.send_message([file_part, prompt])
+        
+        if response and response.text:
+            send_long_reply(message, response.text)
+        else:
+            bot.reply_to(message, "ما گدرت أقرأ محتوى هذا الملف، تأكد إنه بصيغة مدعومة مثل PDF أو ملف نصي.")
+            
+    except Exception as e:
+        try:
+            error_message = f"تعذر قراءة الملف حالياً ⚠️\n(تأكد إن الصيغة مدعومة مثل PDF أو TXT أو صور)\n\nالسبب:\n{str(e)[:1000]}"
             bot.reply_to(message, error_message)
         except Exception as send_err:
             print(f"فشل إرسال رسالة الخطأ: {send_err}")
