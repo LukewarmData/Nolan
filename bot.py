@@ -21,6 +21,31 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 client = genai.Client(api_key=GEMINI_API_KEY)
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
+# متغير لتخزين معرّف البوت مرة واحدة لتسريع التحقق في المجموعات
+BOT_ID = None
+
+def get_bot_id():
+    global BOT_ID
+    if BOT_ID is None:
+        BOT_ID = bot.get_me().id
+    return BOT_ID
+
+def should_reply(message):
+    """التحقق مما إذا كان يجب على البوت الرد على هذه الرسالة"""
+    # في الخاص: يرد على كل شيء طبيعي
+    if message.chat.type == 'private':
+        return True
+    
+    # في المجموعات: يرد فقط إذا كانت الرسالة رداً (Reply) على رسالة للبوت
+    if message.chat.type in ['group', 'supergroup']:
+        return (
+            message.reply_to_message is not None
+            and message.reply_to_message.from_user is not None
+            and message.reply_to_message.from_user.id == get_bot_id()
+        )
+    
+    return False
+
 # --------------------------------------------------------
 # شخصية البوت
 # --------------------------------------------------------
@@ -71,6 +96,9 @@ def reset_chat(message):
 # --------------------------------------------------------
 @bot.message_handler(content_types=['text'])
 def handle_message(message):
+    if not should_reply(message):
+        return
+
     try:
         bot.send_chat_action(message.chat.id, 'typing')
         
@@ -96,17 +124,18 @@ def handle_message(message):
 # --------------------------------------------------------
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
+    if not should_reply(message):
+        return
+
     try:
         bot.send_chat_action(message.chat.id, 'typing')
         
         user_id = message.from_user.id
         chat = get_user_chat(user_id)
         
-        # أخذ أعلى دقة متاحة للصورة وتحميلها
         file_info = bot.get_file(message.photo[-1].file_id)
         downloaded_file = bot.download_file(file_info.file_path)
         
-        # استخدام النص المرفق مع الصورة (Caption) أو سؤال افتراضي
         prompt = message.caption if message.caption else "شنو موجود بهذه الصورة؟ اشرحلي باختصار."
         
         image_part = types.Part.from_bytes(
@@ -133,10 +162,12 @@ def handle_photo(message):
 # --------------------------------------------------------
 @bot.message_handler(content_types=['document'])
 def handle_document(message):
+    if not should_reply(message):
+        return
+
     try:
         doc = message.document
         
-        # التحقق من حجم الملف (حد التحميل في تليجرام للبوتات هو 20 ميجابايت)
         if doc.file_size and doc.file_size > 20 * 1024 * 1024:
             bot.reply_to(message, "حجم الملف أكبر من 20 ميجابايت، تليجرام ما يسمح للبوت بتحميل ملفات بهذا الحجم ⚠️")
             return
@@ -149,7 +180,6 @@ def handle_document(message):
         file_info = bot.get_file(doc.file_id)
         downloaded_file = bot.download_file(file_info.file_path)
         
-        # تحديد نوع الملف (MIME Type)
         mime_type = doc.mime_type or "text/plain"
         file_name = doc.file_name or "ملف"
         
@@ -181,6 +211,7 @@ def run_bot():
         try:
             bot.remove_webhook()
             time.sleep(1)
+            get_bot_id()
             bot.infinity_polling(
                 skip_pending=True,
                 timeout=20,
