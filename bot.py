@@ -4,6 +4,7 @@ from google.genai import types
 import os
 import threading
 import time
+from datetime import datetime, timezone, timedelta
 from flask import Flask
 
 # 1. إعداد الخادم الوهمي لمنصة Render
@@ -11,7 +12,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "البوت يعمل بشخصيته الجديدة وذاكرة المحادثات والصور والملفات بنجاح 24/7!"
+    return "البوت يعمل بشخصيته وذاكرته والتاريخ الحقيقي والبحث في جوجل 24/7!"
 
 # 2. جلب المفاتيح من بيئة الاستضافة
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
@@ -32,11 +33,9 @@ def get_bot_id():
 
 def should_reply(message):
     """التحقق مما إذا كان يجب على البوت الرد على هذه الرسالة"""
-    # في الخاص: يرد على كل شيء طبيعي
     if message.chat.type == 'private':
         return True
     
-    # في المجموعات: يرد فقط إذا كانت الرسالة رداً (Reply) على رسالة للبوت
     if message.chat.type in ['group', 'supergroup']:
         return (
             message.reply_to_message is not None
@@ -47,7 +46,7 @@ def should_reply(message):
     return False
 
 # --------------------------------------------------------
-# شخصية البوت
+# شخصية البوت + التاريخ الحقيقي + البحث في جوجل
 # --------------------------------------------------------
 MY_SYSTEM_PROMPT = """
 أنت بوت ذكاء اصطناعي واسمك "نولان". 
@@ -55,6 +54,28 @@ MY_SYSTEM_PROMPT = """
 إذا سألك من صنعك، أخبره باسم مبرمجك . 
 وأجب باللهجة العراقية, واستخدم الايموجيات في الردود عند الحاجة, ولا تجب بالتفصيل الا عندما يطلب منك ذالك
 """
+
+def get_baghdad_time():
+    """جلب التاريخ والوقت الحالي بدقة بتوقيت بغداد (UTC+3)"""
+    baghdad_tz = timezone(timedelta(hours=3))
+    now = datetime.now(baghdad_tz)
+    return now.strftime("%Y-%m-%d | %I:%M %p")
+
+def get_chat_config(use_search=True):
+    """بناء إعدادات النموذج مع دمج التاريخ الحي وأداة البحث"""
+    dynamic_prompt = (
+        f"{MY_SYSTEM_PROMPT}\n\n"
+        f"معلومة زمنية دقيقة ومحدثة: التاريخ والوقت الحالي الآن في بغداد (العراق) هو: {get_baghdad_time()}.\n"
+        f"اعتمد دائماً على هذا التاريخ كالوقت الحقيقي الحالي، واستخدم البحث في جوجل عند السؤال عن أخبار حديثة أو أحداث جارية."
+    )
+    if use_search:
+        return types.GenerateContentConfig(
+            system_instruction=dynamic_prompt,
+            tools=[types.Tool(google_search=types.GoogleSearch())]
+        )
+    return types.GenerateContentConfig(
+        system_instruction=dynamic_prompt
+    )
 
 # قاموس لحفظ جلسة المحادثة لكل مستخدم حسب الـ ID الخاص به
 user_chats = {}
@@ -64,11 +85,19 @@ def get_user_chat(user_id):
     if user_id not in user_chats:
         user_chats[user_id] = client.chats.create(
             model='gemini-3.5-flash-lite',
-            config=types.GenerateContentConfig(
-                system_instruction=MY_SYSTEM_PROMPT
-            )
+            config=get_chat_config(use_search=True)
         )
     return user_chats[user_id]
+
+def send_to_gemini(chat, contents):
+    """إرسال الرسالة مع تحديث التاريخ والبحث، والعودة التلقائية للوضع العادي إذا تعذر البحث"""
+    try:
+        return chat.send_message(contents, config=get_chat_config(use_search=True))
+    except Exception as e:
+        err_str = str(e).lower()
+        if any(word in err_str for word in ["search", "tool", "grounding", "not supported", "400"]):
+            return chat.send_message(contents, config=get_chat_config(use_search=False))
+        raise e
 
 def send_long_reply(message, reply_text):
     """تقسيم الرسالة تلقائياً إذا تجاوزت حد تليجرام (4096 حرف)"""
@@ -92,7 +121,7 @@ def reset_chat(message):
     bot.reply_to(message, "تم مسح ذاكرة محادثتنا بنجاح! نبدأ من جديد 🔄")
 
 # --------------------------------------------------------
-# أمر المناداة /nolan (يعمل في المجموعات بدون صلاحية قراءة الرسائل)
+# أمر المناداة /nolan
 # --------------------------------------------------------
 @bot.message_handler(commands=['nolan'])
 def handle_nolan_command(message):
@@ -102,14 +131,13 @@ def handle_nolan_command(message):
         user_id = message.from_user.id
         chat = get_user_chat(user_id)
         
-        # التحقق هل كتب المستخدم نصاً بعد /nolan أم ناداه فقط
         parts = message.text.split(maxsplit=1)
         if len(parts) > 1 and parts[1].strip():
             prompt = parts[1].strip()
         else:
             prompt = "شخص ما ناداك باسمك فقط الآن، رد عليه برد عشوائي قصير وعفوي حسب شخصيتك واسأله شلون تكدر تساعده."
         
-        response = chat.send_message(prompt)
+        response = send_to_gemini(chat, prompt)
         
         if response and response.text:
             send_long_reply(message, response.text)
@@ -137,7 +165,7 @@ def handle_message(message):
         user_id = message.from_user.id
         chat = get_user_chat(user_id)
         
-        response = chat.send_message(message.text)
+        response = send_to_gemini(chat, message.text)
         
         if response and response.text:
             send_long_reply(message, response.text)
@@ -175,7 +203,7 @@ def handle_photo(message):
             mime_type="image/jpeg"
         )
         
-        response = chat.send_message([image_part, prompt])
+        response = send_to_gemini(chat, [image_part, prompt])
         
         if response and response.text:
             send_long_reply(message, response.text)
@@ -222,7 +250,7 @@ def handle_document(message):
             mime_type=mime_type
         )
         
-        response = chat.send_message([file_part, prompt])
+        response = send_to_gemini(chat, [file_part, prompt])
         
         if response and response.text:
             send_long_reply(message, response.text)
