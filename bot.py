@@ -12,7 +12,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "البوت يعمل بشخصيته وذاكرته والتاريخ الحقيقي والبحث في جوجل 24/7!"
+    return "البوت يعمل بشخصيته وذاكرته والتاريخ الحقيقي 24/7!"
 
 # 2. جلب المفاتيح من بيئة الاستضافة
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
@@ -22,7 +22,6 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 client = genai.Client(api_key=GEMINI_API_KEY)
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
-# متغير لتخزين معرّف البوت مرة واحدة لتسريع التحقق في المجموعات
 BOT_ID = None
 
 def get_bot_id():
@@ -46,7 +45,7 @@ def should_reply(message):
     return False
 
 # --------------------------------------------------------
-# شخصية البوت + التاريخ الحقيقي + البحث في جوجل
+# شخصية البوت + التاريخ الحقيقي
 # --------------------------------------------------------
 MY_SYSTEM_PROMPT = """
 أنت بوت ذكاء اصطناعي واسمك "نولان". 
@@ -54,6 +53,9 @@ MY_SYSTEM_PROMPT = """
 إذا سألك من صنعك، أخبره باسم مبرمجك . 
 وأجب باللهجة العراقية, واستخدم الايموجيات في الردود عند الحاجة, ولا تجب بالتفصيل الا عندما يطلب منك ذالك
 """
+
+PRIMARY_MODEL = 'gemini-3.5-flash-lite'
+BACKUP_MODEL = 'gemini-2.5-flash'
 
 def get_baghdad_time():
     """جلب التاريخ والوقت الحالي بدقة بتوقيت بغداد (UTC+3)"""
@@ -66,7 +68,7 @@ def get_chat_config(use_search=True):
     dynamic_prompt = (
         f"{MY_SYSTEM_PROMPT}\n\n"
         f"معلومة زمنية دقيقة ومحدثة: التاريخ والوقت الحالي الآن في بغداد (العراق) هو: {get_baghdad_time()}.\n"
-        f"اعتمد دائماً على هذا التاريخ كالوقت الحقيقي الحالي، واستخدم البحث في جوجل عند السؤال عن أخبار حديثة أو أحداث جارية."
+        f"اعتمد دائماً على هذا التاريخ كالوقت الحقيقي الحالي."
     )
     if use_search:
         return types.GenerateContentConfig(
@@ -80,23 +82,36 @@ def get_chat_config(use_search=True):
 # قاموس لحفظ جلسة المحادثة لكل مستخدم حسب الـ ID الخاص به
 user_chats = {}
 
-def get_user_chat(user_id):
+def get_user_chat(user_id, model_name=PRIMARY_MODEL, history=None):
     """جلب محادثة المستخدم الحالية أو إنشاء محادثة جديدة له"""
-    if user_id not in user_chats:
+    if user_id not in user_chats or history is not None:
         user_chats[user_id] = client.chats.create(
-            model='gemini-3.5-flash-lite',
-            config=get_chat_config(use_search=True)
+            model=model_name,
+            config=get_chat_config(use_search=False),
+            history=history
         )
     return user_chats[user_id]
 
-def send_to_gemini(chat, contents):
-    """إرسال الرسالة مع تحديث التاريخ والبحث، والعودة التلقائية للوضع العادي إذا تعذر البحث"""
+def send_to_gemini(user_id, contents):
+    """إرسال الرسالة مع تجاوز أخطاء الحصة (429) للبحث أو النموذج تلقائياً"""
+    chat = get_user_chat(user_id)
+    
+    # المحاولة 1: النموذج الأساسي مع البحث
     try:
         return chat.send_message(contents, config=get_chat_config(use_search=True))
+    except Exception:
+        pass
+
+    # المحاولة 2: نفس النموذج بدون أداة البحث (لأن البحث غالباً حصته 0 في الحسابات الجديدة)
+    try:
+        return chat.send_message(contents, config=get_chat_config(use_search=False))
     except Exception as e:
         err_str = str(e).lower()
-        if any(word in err_str for word in ["search", "tool", "grounding", "not supported", "400"]):
-            return chat.send_message(contents, config=get_chat_config(use_search=False))
+        # المحاولة 3: إذا كان النموذج نفسه حصته 0، ننتقل تلقائياً للنموذج البديل
+        if any(word in err_str for word in ["429", "quota", "resource_exhausted", "404", "not found"]):
+            old_history = chat.get_history()
+            backup_chat = get_user_chat(user_id, model_name=BACKUP_MODEL, history=old_history)
+            return backup_chat.send_message(contents, config=get_chat_config(use_search=False))
         raise e
 
 def send_long_reply(message, reply_text):
@@ -127,9 +142,7 @@ def reset_chat(message):
 def handle_nolan_command(message):
     try:
         bot.send_chat_action(message.chat.id, 'typing')
-        
         user_id = message.from_user.id
-        chat = get_user_chat(user_id)
         
         parts = message.text.split(maxsplit=1)
         if len(parts) > 1 and parts[1].strip():
@@ -137,7 +150,7 @@ def handle_nolan_command(message):
         else:
             prompt = "شخص ما ناداك باسمك فقط الآن، رد عليه برد عشوائي قصير وعفوي حسب شخصيتك واسأله شلون تكدر تساعده."
         
-        response = send_to_gemini(chat, prompt)
+        response = send_to_gemini(user_id, prompt)
         
         if response and response.text:
             send_long_reply(message, response.text)
@@ -161,11 +174,9 @@ def handle_message(message):
 
     try:
         bot.send_chat_action(message.chat.id, 'typing')
-        
         user_id = message.from_user.id
-        chat = get_user_chat(user_id)
         
-        response = send_to_gemini(chat, message.text)
+        response = send_to_gemini(user_id, message.text)
         
         if response and response.text:
             send_long_reply(message, response.text)
@@ -189,9 +200,7 @@ def handle_photo(message):
 
     try:
         bot.send_chat_action(message.chat.id, 'typing')
-        
         user_id = message.from_user.id
-        chat = get_user_chat(user_id)
         
         file_info = bot.get_file(message.photo[-1].file_id)
         downloaded_file = bot.download_file(file_info.file_path)
@@ -203,7 +212,7 @@ def handle_photo(message):
             mime_type="image/jpeg"
         )
         
-        response = send_to_gemini(chat, [image_part, prompt])
+        response = send_to_gemini(user_id, [image_part, prompt])
         
         if response and response.text:
             send_long_reply(message, response.text)
@@ -233,9 +242,7 @@ def handle_document(message):
             return
 
         bot.send_chat_action(message.chat.id, 'typing')
-        
         user_id = message.from_user.id
-        chat = get_user_chat(user_id)
         
         file_info = bot.get_file(doc.file_id)
         downloaded_file = bot.download_file(file_info.file_path)
@@ -250,7 +257,7 @@ def handle_document(message):
             mime_type=mime_type
         )
         
-        response = send_to_gemini(chat, [file_part, prompt])
+        response = send_to_gemini(user_id, [file_part, prompt])
         
         if response and response.text:
             send_long_reply(message, response.text)
