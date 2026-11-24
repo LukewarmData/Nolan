@@ -84,7 +84,7 @@ def get_user_chat(user_id):
     """جلب محادثة المستخدم الحالية أو إنشاء محادثة جديدة له"""
     if user_id not in user_chats:
         user_chats[user_id] = client.chats.create(
-            model='gemini-3.5-flash-lite',
+            model='gemini-3.8-flash',
             config=get_chat_config(use_search=True)
         )
     return user_chats[user_id]
